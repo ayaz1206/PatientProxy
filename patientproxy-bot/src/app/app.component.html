@@ -3,11 +3,11 @@
   <div class="messages">
     <div *ngFor="let message of messages" [ngClass]="{'user': message.sender === 'user', 'bot': message.sender === 'bot'}">
       <strong>{{ message.sender === 'bot' ? 'Bot' : 'You' }}:</strong> {{ message.text }}
-      <em>[Emotion: {{ message.emotion }}]</em>
+      <em *ngIf="message.emotion">[Emotion: {{ message.emotion }}]</em>
     </div>
   </div>
   <div class="input-container">
-    <input [(ngModel)]="userMessage" placeholder="Ask something..." />
+    <input [(ngModel)]="userMessage" placeholder="Ask something..." (keypress)="checkEnter($event)"/>
     <button (click)="sendMessage()">Send</button>
   </div>
 </div>

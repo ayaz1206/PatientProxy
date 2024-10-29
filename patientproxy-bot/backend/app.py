@@ -1,36 +1,86 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from transformers import pipeline
+from flask import Flask, request, jsonify, send_from_directory
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+import torch
+import os
 
-app = Flask(__name__)
-CORS(app)  # Allows cross-origin requests, important for frontend-backend communication
+app = Flask(__name__, static_folder='src/app')  # Adjust this to your Angular build folder
+app.secret_key = "supersecretkey"  # Required for session handling
 
-# Emotion detection model
-emotion_analyzer = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base")
+# Load the emotion analysis model and tokenizer
+emotion_model_name = "cardiffnlp/twitter-roberta-base-sentiment-latest"
+emotion_tokenizer = AutoTokenizer.from_pretrained(emotion_model_name)
+emotion_model = AutoModelForSequenceClassification.from_pretrained(emotion_model_name)
 
-# Flask route for chatbot responses
-@app.route('/api/patient-response', methods=['POST'])
-def patient_response():
-    data = request.get_json()
-    user_input = data.get("message", "")
+# Load the language generation model
+response_generator = pipeline("text-generation", model="distilgpt2")
 
-    # Analyze the input for emotions
-    emotions = emotion_analyzer(user_input)
-    dominant_emotion = emotions[0]['label']
+# Memory structure to hold conversation context
+memory = {}
 
-    # Generate responses based on emotion
-    if dominant_emotion == "anger":
-        response = "I feel frustrated, please help me..."
-    elif dominant_emotion == "fear":
-        response = "I'm really scared, can you comfort me?"
-    elif dominant_emotion == "joy":
-        response = "I'm feeling better, thank you!"
-    elif dominant_emotion == "sadness":
-        response = "I'm in pain, it's hard to cope..."
+# Function to analyze emotion
+def analyze_emotion(text):
+    inputs = emotion_tokenizer(text, return_tensors="pt")
+    outputs = emotion_model(**inputs)
+    probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
+    sentiment = torch.argmax(probs).item()
+    return sentiment  # 0 = Negative, 1 = Neutral, 2 = Positive
+
+# Function to generate dynamic responses based on emotion and intent
+def generate_dynamic_response(emotion_label, intent, user_message):
+    # Create a prompt with context for the language model
+    prompt = f"As a patient feeling {emotion_label.lower()}, {intent}. {user_message}"
+    
+    # Generate a response based on the prompt
+    generated = response_generator(prompt, max_length=50, num_return_sequences=1)[0]["generated_text"]
+    
+    # Remove the prompt portion from the generated text
+    response = generated.replace(prompt, "").strip()
+    return response
+
+@app.route("/test", methods=["GET"])
+def test():
+    return "Flask is working!"
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    user_message = request.json["message"]
+    user_id = request.json["user_id"]
+
+    # Retrieve user's memory if available
+    user_memory = memory.get(user_id, {"emotion": None, "last_topic": None})
+
+    # Analyze emotion in the user message
+    emotion = analyze_emotion(user_message)
+    emotion_label = ["Negative", "Neutral", "Positive"][emotion]
+
+    # Determine intent using basic keyword matching
+    if "pain" in user_message.lower():
+        intent = "describe_symptom"
+    elif "nausea" in user_message.lower():
+        intent = "describe_symptom"
     else:
-        response = "I don't feel well, please assist me."
+        intent = "general"
 
-    return jsonify({"response": response, "emotion": dominant_emotion})
+    # Generate a dynamic response using the emotion label and intent
+    response = generate_dynamic_response(emotion_label, intent, user_message)
 
-if __name__ == '__main__':
+    # Update the user's memory with the latest emotion and intent
+    user_memory["emotion"] = emotion_label
+    user_memory["last_topic"] = intent
+    memory[user_id] = user_memory
+
+    return jsonify({
+        "response": response,
+        "emotion": user_memory["emotion"]
+    })
+
+@app.route('/')
+def serve():
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/<path:path>')
+def static_proxy(path):
+    return send_from_directory(app.static_folder, path)
+
+if __name__ == "__main__":
     app.run(debug=True)
